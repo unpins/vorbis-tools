@@ -1,5 +1,5 @@
 # Platform-aware libao that compiles its audio backends INTO libao.a as built-in
-# static drivers, so a fully-static ogg123 has live playback with no dlopen.
+# static drivers, so a fully-static ogg123/sox has live playback with no dlopen.
 #
 # Upstream libao ships each backend as a libtool `.la` loadable module dlopen'd
 # at runtime from lib/ao/plugins-4/. Under static musl/mingw, dlopen is a no-op
@@ -45,6 +45,111 @@ let
     '';
   });
 
+  # ---- static "pipewire" ALSA plugin, served over the pulse-compat socket ---
+  #
+  # The hard problem: a PipeWire (or PulseAudio) desktop reconfigures ALSA's
+  # `pcm.!default` to `type pipewire` (see /etc/alsa/conf.d/99-pipewire-default).
+  # alsa-lib has no built-in `pipewire` type, so snd_pcm_open_conf() synthesises
+  # the module name `libasound_module_pcm_pipewire.so` and snd_dlopen()s it —
+  # dead under static musl, and the native plugin would drag libpipewire (which
+  # dlopen's SPA modules anyway). So libao's alsa driver, opening `default`,
+  # hits a dlopen wall on exactly the machines people run.
+  #
+  # We honour the machine config (`default → pipewire`) but service the
+  # `pipewire` type STATICALLY, with zero dlopen, by routing it through the
+  # pulse-compat protocol — the very socket the proven static libpulse client
+  # already talks to (pipewire-pulse / PulseAudio). Two facts from alsa-lib make
+  # this work without touching any config on disk:
+  #
+  #   1. snd_pcm_open_conf() only synthesises a `.so` name (→ dlopen) when the
+  #      type is ABSENT from its compiled-in `build_in_pcms[]` list. Add
+  #      "pipewire"/"pulse" to that array and `lib` stays NULL → snd_dlopen(NULL)
+  #      → the static symbol table (`snd_dlsym_start`, live because pkgsStatic
+  #      builds alsa-lib non-PIC), never dlopen.
+  #   2. A plugin registers into that table via the SND_PCM_PLUGIN_SYMBOL
+  #      constructor (`_snd_pcm_<type>_open`). We compile alsa-plugins' pulse
+  #      module (needs only libpulse — no libpipewire/SPA) and a glue TU that
+  #      aliases `_snd_pcm_pipewire_open → _snd_pcm_pulse_open`, then `ar` both
+  #      into libasound.a. A `_snd_module_pcm_pulse` anchor referenced from
+  #      pcm_symbols.c's open-objects array force-links the constructors.
+  #
+  # The pipewire `pcm.!default` carries `playback_node`/`capture_node` fields the
+  # pulse plugin doesn't know; we make its config loop ignore unknown fields
+  # (server stays default → connects to the box's pulse/pipewire socket). Net:
+  # `default → pipewire` resolves to a static symbol that reaches the SAME
+  # PipeWire daemon, no dlopen, machine routing untouched. Linux-only.
+  alsaPluginsSrc = ps.alsa-plugins.src;
+
+  glueC = ps.writeText "pcm_pipewire_glue.c" ''
+    #include <alsa/asoundlib.h>
+    #include <alsa/pcm_external.h>
+
+    extern int _snd_pcm_pulse_open(snd_pcm_t **, const char *, snd_config_t *,
+                                   snd_config_t *, snd_pcm_stream_t, int);
+
+    /* The machine routes default → `type pipewire`; service it via the
+       pulse-compat protocol (same PipeWire daemon), statically, no dlopen.
+       The consumer force-links _snd_pcm_pipewire_open (alsa.pc `-Wl,-u`), which
+       pulls this TU and — via the ref below — pcm_pulse.o, running both
+       SND_PCM_PLUGIN_SYMBOL constructors so each registers in snd_dlsym_start. */
+    int _snd_pcm_pipewire_open(snd_pcm_t **pcmp, const char *name,
+                               snd_config_t *root, snd_config_t *conf,
+                               snd_pcm_stream_t stream, int mode) {
+        return _snd_pcm_pulse_open(pcmp, name, root, conf, stream, mode);
+    }
+    SND_PCM_PLUGIN_SYMBOL(pipewire);
+  '';
+
+  alsaStatic =
+    if isDarwin then ps.alsa-lib
+    else ps.alsa-lib.overrideAttrs (o: {
+      buildInputs = (o.buildInputs or [ ]) ++ [ libpulse libpulse.dev ];
+      postPatch = (o.postPatch or "") + ''
+        # Make pulse/pipewire build-in pcm types: snd_pcm_open_conf() then leaves
+        # `lib` NULL (no synthesised module name) → snd_dlopen(NULL) → the static
+        # symbol table is consulted, and snd_dlopen() of a `.so` never happens.
+        substituteInPlace src/pcm/pcm.c \
+          --replace-fail \
+            '"adpcm", "alaw", "copy", "dmix",' \
+            '"pulse", "pipewire", "adpcm", "alaw", "copy", "dmix",'
+      '';
+      # Compile alsa-plugins' pulse module + the pipewire-alias glue non-PIC and
+      # ar them into the just-built static libasound.a. In-tree `include/alsa`
+      # is a `.` symlink (configure), so <alsa/...> resolves with -Iinclude.
+      postBuild = (o.postBuild or "") + ''
+        echo "unpins: baking static pulse-compat ALSA plugin into libasound.a"
+        asrc=$PWD
+        arch=$(find "$asrc" -name libasound.a -path '*/.libs/*' | head -1)
+        [ -n "$arch" ] || { echo "unpins: libasound.a not found"; exit 1; }
+        plug=$(mktemp -d)
+        tar xf ${alsaPluginsSrc} -C "$plug" --strip-components=1
+        cd "$plug/pulse"
+        # Ignore config fields the pulse plugin doesn't know (pipewire's
+        # playback_node/capture_node); the trailing return becomes dead code.
+        substituteInPlace pcm_pulse.c \
+          --replace-fail 'SNDERR("Unknown field %s", id);' 'continue;'
+        cp ${glueC} pcm_pipewire_glue.c
+        for f in pcm_pulse.c pulse.c pcm_pipewire_glue.c; do
+          echo "unpins: CC $f"
+          $CC -D_GNU_SOURCE -I"$asrc/include" -c "$f" -o "''${f%.c}.o"
+        done
+        $AR r "$arch" pcm_pulse.o pulse.o pcm_pipewire_glue.o
+        ''${RANLIB:-ranlib} "$arch"
+        cd "$asrc"
+      '';
+      # libasound.a now pulls pa_* symbols → a static consumer must link libpulse.
+      # (The plugin objects are force-pulled by libao's alsa wrapper referencing
+      # _snd_pcm_pipewire_open — see the audio_out.c force-ref below — so this
+      # works for every libao consumer regardless of its own link flags.)
+      postInstall = (o.postInstall or "") + ''
+        pc=$(find "''${dev:-$out}" "$out" -name alsa.pc 2>/dev/null | head -1)
+        [ -n "$pc" ] && substituteInPlace "$pc" \
+          --replace-fail 'Libs.private: -lm -lpthread -lrt' \
+            'Libs.private: -lm -lpthread -lrt
+      Requires.private: libpulse'
+      '';
+    });
+
   # ---- built-in-driver wrapper generator ----------------------------------
   baseSyms = [
     "test"
@@ -87,7 +192,7 @@ let
   externLine = lib.concatMapStrings (d: "extern ao_functions ao_${d.name}; ") drivers;
   arrayEntries = lib.concatMapStrings (d: "\n    \t&ao_${d.name},") drivers;
 
-  # ao.pc additions so a static consumer (vorbis-tools' configure → pkg-config)
+  # ao.pc additions so a static consumer (sox/vorbis-tools' configure → pkg-config)
   # resolves the backend closure. Linux: Requires.private chains libpulse/alsa.
   # Darwin: the CoreAudio frameworks ride in Libs.private.
   pcEdit =
@@ -97,7 +202,7 @@ let
           "Libs.private: @LIBS@ -framework AudioUnit -framework CoreAudio -framework CoreServices"
     '' else ''
       substituteInPlace ao.pc.in \
-        --replace-fail "Conflicts:" "Requires.private: libpulse-simple alsa
+        --replace-fail "Conflicts:" "Requires.private: libpulse-simple libpulse alsa
       Conflicts:"
     '';
 
@@ -105,21 +210,46 @@ let
   # On Linux, ao.pc's Requires.private needs libpulse/alsa .pc reachable in the
   # consumer's PKG_CONFIG_PATH; pkgsStatic only auto-propagates `out` (the .pc is
   # in `.dev`) → propagate .dev explicitly (the pkgsStatic-multi-output trap).
+  # alsaStatic (not ps.alsa-lib) is the one carrying the baked-in pipewire plugin.
   extraPropagated = lib.optionals (!isDarwin) [
     libpulse
     libpulse.dev
-    ps.alsa-lib
-    ps.alsa-lib.dev
+    alsaStatic
+    alsaStatic.dev
   ];
   extraBuildInputs = lib.optionals (!isDarwin) [ libpulse libpulse.dev ];
 in
-ps.libao.overrideAttrs (o: {
+(ps.libao.override (lib.optionalAttrs (!isDarwin) { alsa-lib = alsaStatic; })).overrideAttrs (o: {
+  # Expose the pipewire-static alsa-lib so the consumer (sox/vorbis-tools) can
+  # point its OWN native alsa backend at the SAME libasound.a — otherwise the
+  # app drags a second, vanilla alsa-lib whose `default` still dlopen-fails.
+  passthru = (o.passthru or { }) // { inherit alsaStatic; };
   buildInputs = (o.buildInputs or [ ]) ++ extraBuildInputs;
   propagatedBuildInputs = (o.propagatedBuildInputs or [ ]) ++ extraPropagated;
-  configureFlags = (o.configureFlags or [ ]) ++ extraConfigure;
+  # Drop nixpkgs' --enable-alsa-mmap: it makes the alsa driver request
+  # SND_PCM_ACCESS_MMAP_INTERLEAVED, which the pulse-compat ioplug (our static
+  # `pipewire` path) does NOT support → snd_pcm_hw_params_set_access fails with
+  # EIO. Plain RW_INTERLEAVED (the non-mmap default) works on the ioplug AND on
+  # real hardware (hw/dmix), so it's the universally safe access mode. The
+  # runtime `use_mmap` option is still there for bare-metal users who want it.
+  configureFlags = (lib.filter (f: f != "--enable-alsa-mmap") (o.configureFlags or [ ]))
+    ++ extraConfigure;
   meta = (o.meta or { }) // { platforms = lib.platforms.all; broken = false; };
   postPatch = (o.postPatch or "") + ''
     ${wrapFiles}
+    ${lib.optionalString (!isDarwin) ''
+      # Force-link the baked-in static pulse/pipewire plugin: ao_alsa_static.o is
+      # always pulled (its ao_alsa table is in static_drivers[]), so a reference
+      # here drags the plugin's glue + pcm_pulse objects out of libasound.a,
+      # running their SND_PCM_PLUGIN_SYMBOL constructors at startup. This is what
+      # makes `default → type pipewire` resolve to a static symbol — for ANY
+      # libao consumer (ogg123, sox), no per-consumer link flag needed.
+      chmod u+w src/ao_alsa_static.c
+      printf '%s\n' \
+        'extern int _snd_pcm_pipewire_open(void);' \
+        'void *const _ao_unpin_force_pipewire = (void *)&_snd_pcm_pipewire_open;' \
+        >> src/ao_alsa_static.c
+    ''}
 
     substituteInPlace src/Makefile.am \
       --replace-fail \
