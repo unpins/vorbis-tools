@@ -40,15 +40,30 @@
       # Native (Linux + Darwin). audio.nix returns a libao with the platform's
       # backends compiled in as built-in static drivers. speex gets the nix-lib
       # arm64-darwin meson fix (inert no-op elsewhere; same class as libopus).
+      #
+      # configure.ac probes for socket() in the legacy Solaris/BeOS link libs:
+      #   AC_CHECK_LIB(socket, ...) / AC_CHECK_LIB(network, socket, -lnetwork).
+      # On macOS socket() lives in libSystem (no extra lib needed), but
+      # /usr/lib/libnetwork.dylib happens to exist and re-export socket, so the
+      # `network` probe spuriously succeeds and sets SOCKET_LIBS=-lnetwork. That
+      # -lnetwork ends up in ogg123's link line (and thus the merged binary),
+      # adding a direct load of /usr/lib/libnetwork.dylib — a dyld-shared-cache
+      # lib with no static archive, which trips action-build's darwin allow-list
+      # (libSystem + /System/Library/Frameworks + libobjc). Pre-seed the autoconf
+      # cache so the probe reports "no" on darwin; socket() still resolves from
+      # libSystem. (Inert on Linux, where libnetwork doesn't exist anyway. curl
+      # stays — it links static here, so http:// playback works on Linux + macOS.)
       build = pkgs:
         let
           ps = pkgs.pkgsStatic;
+          isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
           audioLibao = import ./audio.nix { lib = pkgs.lib // ulib; } ps;
           vorbisTools = (ps.vorbis-tools.override {
             libao = audioLibao;
             speex = ulib.nativeFixes.speex ps;
           }).overrideAttrs (o: {
-            configureFlags = (o.configureFlags or [ ]) ++ [ "--disable-nls" ];
+            configureFlags = (o.configureFlags or [ ]) ++ [ "--disable-nls" ]
+              ++ pkgs.lib.optional isDarwin "ac_cv_lib_network_socket=no";
           });
         in
         import ./multicall.nix { lib = pkgs.lib // ulib; }
