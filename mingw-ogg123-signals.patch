@@ -1,0 +1,50 @@
+--- a/ogg123/ogg123.c
++++ b/ogg123/ogg123.c
+@@ -46,6 +46,10 @@
+ #include "status.h"
+ #include "playlist.h"
+ #include "compat.h"
++#ifdef _WIN32
++#define random() rand()
++#define srandom(s) srand(s)
++#endif
+ #include "remote.h"
+ 
+ #include "ogg123.h"
+@@ -120,6 +124,7 @@
+     sig_request.exit = 1;
+     break;
+ 
++#ifndef _WIN32
+   case SIGTSTP:
+     sig_request.pause = 1;
+     /* buffer_Pause (Options.outputOpts.buffer);
+@@ -139,6 +144,7 @@
+ 
+   case SIGCONT:
+     break;  /* Don't need to do anything special to resume */
++#endif
+   }
+ }
+ 
+@@ -465,8 +471,10 @@
+   /* Setup signal handlers and callbacks */
+ 
+   signal (SIGINT, signal_handler);
++#ifndef _WIN32
+   signal (SIGTSTP, signal_handler);
+   signal (SIGCONT, signal_handler);
++#endif
+   signal (SIGTERM, signal_handler);
+ 
+   if (options.remote) {
+@@ -650,7 +658,9 @@
+ 	if (audio_buffer)
+ 	  buffer_thread_pause (audio_buffer);
+ 
++#ifndef _WIN32
+ 	kill (getpid(), SIGSTOP); /* We block here until we unpause */
++#endif
+ 	
+ 	/* Done pausing */
+ 	if (audio_buffer)

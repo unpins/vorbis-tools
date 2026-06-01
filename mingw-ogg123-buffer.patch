@@ -1,0 +1,35 @@
+--- a/ogg123/buffer.c
++++ b/ogg123/buffer.c
+@@ -20,7 +20,9 @@
+ #endif
+ 
+ #include <sys/types.h>
++#ifndef _WIN32
+ #include <sys/wait.h>
++#endif
+ #include <sys/time.h>
+ #include <string.h>
+ #include <fcntl.h>
+@@ -77,17 +79,21 @@
+ 
+ void buffer_thread_init (buf_t *buf)
+ {
++#ifndef _WIN32
+   sigset_t set;
++#endif
+ 
+   DEBUG("Enter buffer_thread_init");
+ 
+-  /* Block signals to this thread */
++#ifndef _WIN32
++  /* Block signals to this thread (no SIGTSTP/SIGCONT on Windows) */
+   sigfillset(&set);
+   sigaddset(&set, SIGINT);
+   sigaddset(&set, SIGTSTP);
+   sigaddset(&set, SIGCONT);
+   if (pthread_sigmask(SIG_BLOCK, &set, NULL) != 0)
+     DEBUG("pthread_sigmask failed");
++#endif
+ }
+ 
+ 
