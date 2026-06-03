@@ -1,7 +1,7 @@
 # vorbis-tools
 
 Standalone build of the [vorbis-tools](https://xiph.org/vorbis/) command-line
-utilities — play, encode, decode and tag [Ogg Vorbis](https://xiph.org/vorbis/)
+programs — play, encode, decode and tag [Ogg Vorbis](https://xiph.org/vorbis/)
 audio, including the `ogg123` player.
 
 [![CI](https://github.com/unpins/vorbis-tools/actions/workflows/vorbis-tools.yml/badge.svg)](https://github.com/unpins/vorbis-tools/actions)
@@ -29,8 +29,6 @@ unpin install vorbis-tools
 `unpin install vorbis-tools` also creates the `ogg123`, `oggenc`, `oggdec`, `ogginfo`, `vorbiscomment`, `vcut` commands.
 
 ## Programs
-
-One binary provides all six vorbis-tools CLIs:
 
 | command         | what it does                                              |
 | --------------- | -------------------------------------------------------- |
