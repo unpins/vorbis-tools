@@ -11,23 +11,6 @@ audio, including the `ogg123` player.
 
 Part of the [unpins](https://unpins.org) project — native single-binary builds with no third-party runtime dependencies.
 
-## Tools
-
-One binary provides all six vorbis-tools CLIs:
-
-| command         | what it does                                              |
-| --------------- | -------------------------------------------------------- |
-| `ogg123`        | play Ogg Vorbis / FLAC / Speex to the sound device       |
-| `oggenc`        | encode WAV / AIFF / FLAC / raw PCM to Ogg Vorbis          |
-| `oggdec`        | decode Ogg Vorbis to WAV / raw PCM                        |
-| `ogginfo`       | show stream, header and tag info for an Ogg file          |
-| `vorbiscomment` | read and edit Ogg Vorbis comment tags                     |
-| `vcut`          | split an Ogg Vorbis file at a cutpoint or time            |
-
-`ogg123` plays through the OS sound system out of the box — PulseAudio/PipeWire
-(falling back to ALSA, then OSS) on Linux, CoreAudio on macOS, WMM on Windows —
-with no shared libraries alongside the binary.
-
 ## Usage
 
 Run a program with [unpin](https://github.com/unpins/unpin):
@@ -44,6 +27,23 @@ unpin install vorbis-tools
 ```
 
 `unpin install vorbis-tools` also creates the `ogg123`, `oggenc`, `oggdec`, `ogginfo`, `vorbiscomment`, `vcut` commands.
+
+## Programs
+
+One binary provides all six vorbis-tools CLIs:
+
+| command         | what it does                                              |
+| --------------- | -------------------------------------------------------- |
+| `ogg123`        | play Ogg Vorbis / FLAC / Speex to the sound device       |
+| `oggenc`        | encode WAV / AIFF / FLAC / raw PCM to Ogg Vorbis          |
+| `oggdec`        | decode Ogg Vorbis to WAV / raw PCM                        |
+| `ogginfo`       | show stream, header and tag info for an Ogg file          |
+| `vorbiscomment` | read and edit Ogg Vorbis comment tags                     |
+| `vcut`          | split an Ogg Vorbis file at a cutpoint or time            |
+
+`ogg123` plays through the OS sound system out of the box — PulseAudio/PipeWire
+(falling back to ALSA, then OSS) on Linux, CoreAudio on macOS, WMM on Windows —
+with no shared libraries alongside the binary.
 
 ## Build locally
 
