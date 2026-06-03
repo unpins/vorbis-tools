@@ -28,19 +28,22 @@ One binary provides all six vorbis-tools CLIs:
 (falling back to ALSA, then OSS) on Linux, CoreAudio on macOS, WMM on Windows —
 with no shared libraries alongside the binary.
 
-## Installation
+## Usage
 
-Install with [unpin](https://github.com/unpins/unpin):
-
-```bash
-unpin vorbis-tools
-```
-
-Or run without installing:
+Run a program with [unpin](https://github.com/unpins/unpin):
 
 ```bash
-unpin run vorbis-tools -- ogg123 song.ogg
+unpin vorbis-tools ogg123 song.ogg
+unpin vorbis-tools oggenc song.wav
 ```
+
+To install the programs onto your PATH:
+
+```bash
+unpin install vorbis-tools
+```
+
+`unpin install vorbis-tools` also creates the `ogg123`, `oggenc`, `oggdec`, `ogginfo`, `vorbiscomment`, `vcut` commands.
 
 ## Build locally
 
