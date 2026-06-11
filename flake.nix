@@ -1,5 +1,5 @@
 {
-  description = "Standalone build of vorbis-tools (ogg123 player, oggenc encoder, and the Ogg-Vorbis utilities)";
+  description = "vorbis-tools (ogg123 player + Ogg Vorbis utilities) as a single self-contained binary";
 
   nixConfig = {
     extra-substituters = [ "https://unpins.cachix.org" ];
