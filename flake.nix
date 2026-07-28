@@ -30,6 +30,78 @@
   outputs = { self, unpins-lib }:
     let
       ulib = unpins-lib.lib;
+      # Per-dep fixes for the audio closure ogg123 drags in under the engine
+      # (libao → libpulse → {fftw, dbus → libX11}; libsndfile → {lame,
+      # libmpg123}). Every one of these is the same breakage sox hit migrating
+      # the same chain. Only the Linux playback path pulls libpulse, so off
+      # Linux this is effectively identity.
+      withCodecFixes = ps: ps.extend (final: prev: {
+        # libX11 (pulled on Linux via libao's playback chain, libpulseaudio →
+        # dbus → libX11) probes whether its cpp needs -undef to stop predefining
+        # `unix`. The engine's clang cpp keeps `unix` defined even under -undef,
+        # so the probe aborts ("defines unix with or without -undef. I don't know
+        # what to do."). RAWCPP only preprocesses X11's host-independent locale/
+        # compose text at build time, so hand it the build-host gcc cpp; libX11
+        # links in as a plain static .a regardless of which cpp cooked its data.
+        # Same fix sox/ddcutil use. Inert on darwin (no X11 in the CoreAudio path).
+        libx11 = prev.libx11.overrideAttrs (_: {
+          RAWCPP = "${final.buildPackages.stdenv.cc}/bin/cpp";
+        });
+        # fftw (single, pulled via libpulseaudio's equalizer module) forces
+        # --enable-openmp and links llvmPackages.openmp, but the engine's
+        # self-contained clang has no OpenMP runtime → configure aborts ("don't
+        # know how to enable OpenMP"). The OpenMP variant (libfftw3f_omp) is
+        # unused — pulseaudio links the serial libfftw3f — so drop OpenMP and keep
+        # pthreads threading. Same fix sox uses.
+        fftwFloat = prev.fftwFloat.overrideAttrs (o: {
+          configureFlags = final.lib.filter (f: f != "--enable-openmp")
+            (o.configureFlags or [ ]);
+          buildInputs = final.lib.filter (d: (d.pname or "") != "openmp")
+            (o.buildInputs or [ ]);
+        });
+        # lame's `#ifdef HAVE_XMMINTRIN_H` SSE paths (libmp3lame/vector/… use
+        # `__m128`) don't compile on the i686 target's -march=i686 baseline (no
+        # SSE). configure defines HAVE_XMMINTRIN_H anyway: its probe compiles
+        # `_mm_sfence()` with clang's *default* i686 flags (SSE2-capable) BEFORE
+        # lame appends -march=i686 to CFLAGS, so it passes where the real compile
+        # fails (gcc doesn't false-positive here). Undefine it post-configure —
+        # every SSE block then takes its scalar fallback (what ARM/PPC already
+        # use; MP3 output unchanged). Gated to i686. Same fix sox uses.
+        lame = if final.stdenv.hostPlatform.isx86_32
+          then prev.lame.overrideAttrs (o: {
+            postConfigure = (o.postConfigure or "") + ''
+              sed -i '/#define HAVE_XMMINTRIN_H 1/d' config.h
+            '';
+          })
+          else prev.lame;
+        # libvorbis' 32-bit-x86 CFLAGS case hardcodes `-mno-ieee-fp`, a GCC-only
+        # flag the engine clang rejects as a fatal unknown argument (x86_64 takes
+        # a different case). It only relaxes IEEE FP strictness for -ffast-math
+        # (already on); drop it so i686 compiles. Gated so other arches keep their
+        # hash. Same fix sox uses.
+        libvorbis = if final.stdenv.hostPlatform.isx86_32
+          then prev.libvorbis.overrideAttrs (o: {
+            postPatch = (o.postPatch or "") + ''
+              substituteInPlace configure --replace-fail ' -mno-ieee-fp' ""
+            '';
+          })
+          else prev.libvorbis;
+        # libmpg123 (pulled by libsndfile for MP3 decode) builds its mpg123/
+        # out123 CLI programs even under nixpkgs' libOnly (that only drops the
+        # audio backends). Those programs fail the engine's whole-program LTO link
+        # (ld.lld: undefined symbol `fputs`), and we don't ship them — libsndfile
+        # needs only libmpg123.a. Select just that component so the offending link
+        # never happens; the decode library is unchanged.
+        libmpg123 = prev.libmpg123.overrideAttrs (o: {
+          configureFlags = (o.configureFlags or [ ])
+            ++ [ "--disable-components" "--enable-libmpg123" ];
+          # With only the library built there are no man pages, so the recipe's
+          # declared `man` output would be empty and nix errors.
+          postInstall = (o.postInstall or "") + ''
+            mkdir -p "$man"
+          '';
+        });
+      });
       # The engine self-fold's auto-derived `depInputDirs` globs each dep's
       # `lib/*.a`, but libpulseaudio ships its internal `libpulsecommon-<ver>.a`
       # one level down in `lib/pulseaudio/` — so the pa_* symbols ogg123 pulls
@@ -47,12 +119,14 @@
       smoke = [ "--version" ];
       smokePattern = "ogg123.*vorbis-tools";
 
-      # Build via the unpin-llvm engine + emit a bitcode multicall module. On
-      # Linux the engine compiles vorbis-tools to bitcode and the standalone
-      # self-folds the six CLIs into one `vorbis-tools` binary; darwin (no engine)
-      # keeps the objcopy fold in ./multicall.nix; windows via windowsBuild. Pure
-      # C — no requires.cxx. The bare `vorbis-tools --version` smoke falls through
-      # to ogg123, so defaultProgram pins it.
+      # Build via the unpin-llvm engine + emit a bitcode multicall module: the
+      # engine compiles vorbis-tools to bitcode and the standalone self-folds the
+      # six CLIs into one `vorbis-tools` binary, on Linux and darwin alike.
+      # Windows (mingw, no engine → native objects) goes through windowsBuild's
+      # objcopy fold instead — objcopy cannot rewrite bitcode, so ./multicall.nix
+      # must NOT run over an engine build. Pure C — no requires.cxx. The bare
+      # `vorbis-tools --version` smoke falls through to ogg123, so defaultProgram
+      # pins it.
       engine = "unpin-llvm";
       multicall = {
         defaultProgram = "ogg123";
@@ -66,7 +140,23 @@
         ];
         # ogg123's pulse backend pulls libpulse's internal libpulsecommon, which
         # ships in lib/pulseaudio/ (not lib/) and so escapes the auto dep glob.
-        depArchives = pkgs: [ (pulseCommonArchive pkgs.pkgsStatic) ];
+        # Linux only — the darwin libao drives CoreAudio, so audio.nix builds no
+        # libpulse there and exposes no such passthru.
+        depArchives = pkgs:
+          pkgs.lib.optional pkgs.stdenv.hostPlatform.isLinux
+            (pulseCommonArchive (withCodecFixes pkgs.pkgsStatic));
+        # darwin: the self-fold relinks from the captured link inputs, but the
+        # capture records only `-l`/`-L`, not `-framework` — so the frameworks
+        # audio.nix puts in ao.pc's Libs.private (libao's macosx driver:
+        # AudioComponent*/AudioOutputUnit*) and curl's proxy lookup
+        # (SCDynamicStoreCopyProxies) must be named here too. darwin-only in
+        # effect (the fold gates `-framework` on isDarwinHost).
+        requires.frameworks = [
+          "AudioUnit"
+          "CoreAudio"
+          "CoreServices"
+          "SystemConfiguration"
+        ];
       };
 
       # Native (Linux + Darwin). audio.nix returns a libao with the platform's
@@ -87,7 +177,7 @@
       # stays — it links static here, so http:// playback works on Linux + macOS.)
       build = pkgs:
         let
-          ps = pkgs.pkgsStatic;
+          ps = withCodecFixes pkgs.pkgsStatic;
           isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
           audioLibao = import ./audio.nix { lib = pkgs.lib // ulib; } ps;
           vorbisTools = (ps.vorbis-tools.override {
@@ -101,10 +191,7 @@
             doInstallCheck = false;
           });
         in
-        if pkgs.stdenv.hostPlatform.isLinux
-        then vorbisTools                       # engine path: apps → bitcode → selfFold
-        else import ./multicall.nix { lib = pkgs.lib // ulib; }
-          { inherit pkgs vorbisTools; };
+        vorbisTools;                           # engine path: apps → bitcode → selfFold
 
       # Windows via mingw. libao's WMM driver is already in static_drivers[] and
       # mingw has no dlopen, so vanilla cross libao gives playback for free — only
