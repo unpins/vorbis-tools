@@ -149,7 +149,10 @@ let
         [ -n "$a" ] || continue
         printf '%s\t%s\n' "$a" "$(printf '%s' "$a" | tr -c 'A-Za-z0-9_' '_')"
       done < multicall/apps.list > multicall/applets.list
-${lib.multicallTableDispatcherC { name = "vorbis-tools"; defaultApplet = "ogg123"; }}
+      # `windows`: oggenc opens with get_args_from_ucs16(), which rebuilds argv
+      # from the real command line — without the rewrite it re-reads the
+      # selector. The other four tools take argv as handed.
+${lib.multicallTableDispatcherC { name = "vorbis-tools"; defaultApplet = "ogg123"; windows = isWindows; }}
       $CC -O2 -c -o multicall/dispatcher.o multicall/dispatcher.c
 
       # Final link: shared archives, once. On GNU-ld targets wrap them in a group
