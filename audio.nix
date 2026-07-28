@@ -223,7 +223,11 @@ in
   # Expose the pipewire-static alsa-lib so the consumer (sox/vorbis-tools) can
   # point its OWN native alsa backend at the SAME libasound.a — otherwise the
   # app drags a second, vanilla alsa-lib whose `default` still dlopen-fails.
-  passthru = (o.passthru or { }) // { inherit alsaStatic; };
+  # Expose the static libpulse so a consumer (the engine self-fold) can name its
+  # nested `lib/pulseaudio/libpulsecommon-<ver>.a` — which the auto dep glob
+  # (lib/*.a) misses — as an explicit depArchive. null on Darwin (no pulse).
+  passthru = (o.passthru or { }) // { inherit alsaStatic; }
+    // lib.optionalAttrs (!isDarwin) { inherit libpulse; };
   buildInputs = (o.buildInputs or [ ]) ++ extraBuildInputs;
   propagatedBuildInputs = (o.propagatedBuildInputs or [ ]) ++ extraPropagated;
   # Drop nixpkgs' --enable-alsa-mmap: it makes the alsa driver request

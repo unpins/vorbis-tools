@@ -30,12 +30,44 @@
   outputs = { self, unpins-lib }:
     let
       ulib = unpins-lib.lib;
+      # The engine self-fold's auto-derived `depInputDirs` globs each dep's
+      # `lib/*.a`, but libpulseaudio ships its internal `libpulsecommon-<ver>.a`
+      # one level down in `lib/pulseaudio/` — so the pa_* symbols ogg123 pulls
+      # (pa_run_once, pa_hashmap_*, …) would be undefined at the LTO link. Name
+      # that nested archive explicitly as a depArchive, reusing the SAME static
+      # libpulse audio.nix bakes into libao (exposed via passthru), so the bytes
+      # match the build's input closure.
+      pulseCommonArchive = ps:
+        let lp = (import ./audio.nix { lib = ps.lib // ulib; } ps).libpulse;
+        in "${lp}/lib/pulseaudio/libpulsecommon-${lp.version}.a";
     in
     ulib.mkStandaloneFlake {
       inherit self;
       name = "vorbis-tools";
       smoke = [ "--version" ];
       smokePattern = "ogg123.*vorbis-tools";
+
+      # Build via the unpin-llvm engine + emit a bitcode multicall module. On
+      # Linux the engine compiles vorbis-tools to bitcode and the standalone
+      # self-folds the six CLIs into one `vorbis-tools` binary; darwin (no engine)
+      # keeps the objcopy fold in ./multicall.nix; windows via windowsBuild. Pure
+      # C — no requires.cxx. The bare `vorbis-tools --version` smoke falls through
+      # to ogg123, so defaultProgram pins it.
+      engine = "unpin-llvm";
+      multicall = {
+        defaultProgram = "ogg123";
+        programs = [
+          { name = "ogg123"; }
+          { name = "oggenc"; }
+          { name = "oggdec"; }
+          { name = "ogginfo"; }
+          { name = "vcut"; }
+          { name = "vorbiscomment"; }
+        ];
+        # ogg123's pulse backend pulls libpulse's internal libpulsecommon, which
+        # ships in lib/pulseaudio/ (not lib/) and so escapes the auto dep glob.
+        depArchives = pkgs: [ (pulseCommonArchive pkgs.pkgsStatic) ];
+      };
 
       # Native (Linux + Darwin). audio.nix returns a libao with the platform's
       # backends compiled in as built-in static drivers. speex gets the nix-lib
@@ -64,9 +96,14 @@
           }).overrideAttrs (o: {
             configureFlags = (o.configureFlags or [ ]) ++ [ "--disable-nls" ]
               ++ pkgs.lib.optional isDarwin "ac_cv_lib_network_socket=no";
+            # The upstream installCheck runs a single tool we'd be replacing.
+            doCheck = false;
+            doInstallCheck = false;
           });
         in
-        import ./multicall.nix { lib = pkgs.lib // ulib; }
+        if pkgs.stdenv.hostPlatform.isLinux
+        then vorbisTools                       # engine path: apps → bitcode → selfFold
+        else import ./multicall.nix { lib = pkgs.lib // ulib; }
           { inherit pkgs vorbisTools; };
 
       # Windows via mingw. libao's WMM driver is already in static_drivers[] and

@@ -138,12 +138,18 @@ let
       done
 
       # Dispatcher (shared canonical generator — see nix-lib
-      # lib.multicallDispatcherC). Applet list from multicall/apps.list ($TOOLS);
+      # lib.multicallTableDispatcherC). Applet list from multicall/apps.list ($TOOLS);
       # a bare/unknown invocation runs ogg123 (defaultApplet) so the
       # `--version` smoke reaches ogg123_main and a renamed copy still dispatches.
       mkdir -p multicall
       printf '%s\n' $TOOLS > multicall/apps.list
-${lib.multicallDispatcherC { name = "vorbis-tools"; defaultApplet = "ogg123"; }}
+      # The generator reads a TSV `<applet>\t<fn-base>` and calls `<fn-base>_main`;
+      # sanitize exactly as the mains were renamed so the symbols match.
+      while IFS= read -r a; do
+        [ -n "$a" ] || continue
+        printf '%s\t%s\n' "$a" "$(printf '%s' "$a" | tr -c 'A-Za-z0-9_' '_')"
+      done < multicall/apps.list > multicall/applets.list
+${lib.multicallTableDispatcherC { name = "vorbis-tools"; defaultApplet = "ogg123"; }}
       $CC -O2 -c -o multicall/dispatcher.o multicall/dispatcher.c
 
       # Final link: shared archives, once. On GNU-ld targets wrap them in a group
