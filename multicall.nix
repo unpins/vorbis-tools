@@ -139,8 +139,8 @@ let
 
       # Dispatcher (shared canonical generator — see nix-lib
       # lib.multicallTableDispatcherC). Applet list from multicall/apps.list ($TOOLS);
-      # a bare/unknown invocation runs ogg123 (defaultApplet) so the
-      # `--version` smoke reaches ogg123_main and a renamed copy still dispatches.
+      # a bare/unknown invocation lists the programs (`vorbis-tools` is not one
+      # of them); the smoke selects one with --unpin-program=.
       mkdir -p multicall
       printf '%s\n' $TOOLS > multicall/apps.list
       # The generator reads a TSV `<applet>\t<fn-base>` and calls `<fn-base>_main`;
@@ -152,7 +152,7 @@ let
       # `windows`: oggenc opens with get_args_from_ucs16(), which rebuilds argv
       # from the real command line — without the rewrite it re-reads the
       # selector. The other four tools take argv as handed.
-${lib.multicallTableDispatcherC { name = "vorbis-tools"; defaultApplet = "ogg123"; windows = isWindows; }}
+${lib.multicallTableDispatcherC { name = "vorbis-tools"; windows = isWindows; }}
       $CC -O2 -c -o multicall/dispatcher.o multicall/dispatcher.c
 
       # Final link: shared archives, once. On GNU-ld targets wrap them in a group

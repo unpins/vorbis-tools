@@ -116,7 +116,7 @@
     ulib.mkStandaloneFlake {
       inherit self;
       name = "vorbis-tools";
-      smoke = [ "--version" ];
+      smoke = [ "--unpin-program=ogg123" "--version" ];
       smokePattern = "ogg123.*vorbis-tools";
 
       # Build via the unpin-llvm engine + emit a bitcode multicall module: the
@@ -124,12 +124,9 @@
       # six CLIs into one `vorbis-tools` binary, on Linux and darwin alike.
       # Windows (mingw, no engine → native objects) goes through windowsBuild's
       # objcopy fold instead — objcopy cannot rewrite bitcode, so ./multicall.nix
-      # must NOT run over an engine build. Pure C — no requires.cxx. The bare
-      # `vorbis-tools --version` smoke falls through to ogg123, so defaultProgram
-      # pins it.
+      # must NOT run over an engine build. Pure C — no requires.cxx.
       engine = "unpin-llvm";
       multicall = {
-        defaultProgram = "ogg123";
         programs = [
           { name = "ogg123"; }
           { name = "oggenc"; }
