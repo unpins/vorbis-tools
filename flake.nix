@@ -9,12 +9,12 @@
   inputs.unpins-lib.url = "github:unpins/nix-lib";
 
   # vorbis-tools installs six CLIs — ogg123 (play), oggenc (encode), oggdec
-  # (decode), ogginfo (inspect), vcut (split) and vorbiscomment (tag);
-  # ./multicall.nix post-links them into one `vorbis-tools` dispatcher binary
-  # with each tool as an argv[0]-dispatch UNPIN_META alias. The canonical binary
-  # is named `vorbis-tools` (the package name) to match unpins/action-build's
-  # result/bin/<package_name> contract; the bare dispatcher falls through to the
-  # flagship player ogg123, so `vorbis-tools --version` prints ogg123's banner.
+  # (decode), ogginfo (inspect), vcut (split) and vorbiscomment (tag); the
+  # engine self-folds them into one `vorbis-tools` dispatcher binary with each
+  # tool as an argv[0]-dispatch UNPIN_META alias. The canonical binary is named
+  # `vorbis-tools` (the package name) to match unpins/action-build's
+  # result/bin/<package_name> contract; that name is not itself a tool, so a
+  # bare invocation lists the six.
   #
   # The hard part is live audio in a fully-static binary. libao ships its audio
   # backends as dlopen plugins, dead under static musl/mingw — so ./audio.nix
@@ -121,12 +121,11 @@
 
       # Build via the unpin-llvm engine + emit a bitcode multicall module: the
       # engine compiles vorbis-tools to bitcode and the standalone self-folds the
-      # six CLIs into one `vorbis-tools` binary, on Linux and darwin alike.
-      # Windows (mingw, no engine → native objects) goes through windowsBuild's
-      # objcopy fold instead — objcopy cannot rewrite bitcode, so ./multicall.nix
-      # must NOT run over an engine build. Pure C — no requires.cxx.
+      # six CLIs into one `vorbis-tools` binary on every target, windows
+      # included. Pure C — no requires.cxx.
       engine = "unpin-llvm";
       multicall = {
+        windows = true;
         programs = [
           { name = "ogg123"; }
           { name = "oggenc"; }
@@ -209,8 +208,13 @@
           # libao's WMM driver needs the Windows audio system libs at consumer
           # link time: -lwinmm (waveOut*) and -lksuser (the KSDATAFORMAT_SUBTYPE_*
           # GUIDs ksmedia.h declares extern). libao only records -lwinmm in
-          # WMM_LIBS, so add both to ao.pc's Libs (ogg123 links `pkg-config --libs
-          # ao`; the multicall then re-harvests them from that link line).
+          # WMM_LIBS, so add both to ao.pc's Libs — that is what lets ogg123's own
+          # link (`pkg-config --libs ao`) succeed, which is where the engine
+          # captures its objects. The FINAL fold link does not inherit them: the
+          # capture shim only resolves `-l<name>` that it can find as a
+          # `lib<name>.a` under an explicit `-L` dir, and these are mingw sysroot
+          # import stubs. They come from nix-lib's winExtraLibs force-link, the
+          # same channel BCryptGenRandom and PathRemoveFileSpecA use.
           winLibao = (metaAllow cross.libao).overrideAttrs (o: {
             postPatch = (o.postPatch or "") + ''
               substituteInPlace ao.pc.in \
@@ -269,7 +273,6 @@
             '';
           });
         in
-        import ./multicall.nix { lib = pkgs.lib // ulib; }
-          { inherit pkgs vorbisTools; };
+        vorbisTools;
     };
 }
