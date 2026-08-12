@@ -254,14 +254,6 @@
               # -DNAME_MAX=255: playlist.c uses the POSIX limits.h constant for the
               # max filename length; mingw doesn't define it (255 is the usual value).
               NIX_CFLAGS_COMPILE = (o.env.NIX_CFLAGS_COMPILE or "") + " -DFLAC__NO_DLL -DNAME_MAX=255";
-              # AC_CHECK_FUNCS probes `select` by LINKING it, and winsock exports
-              # one — so on the engine the probe says YES (it force-links -lws2_32
-              # on every link, which is what resolves it; the old gcc build had no
-              # ws2_32 on the probe line and answered no). HAVE_SELECT then makes
-              # remote.c include <sys/select.h>, which mingw does not ship. `no` is
-              # also the honest answer: winsock's select takes only sockets, and
-              # remote.c polls stdin with it.
-              ac_cv_func_select = "no";
             };
             # share/utf8.c splits into a _WIN32 branch (direct Windows Unicode
             # APIs) and a #else branch for "real operating systems". convert_*()
