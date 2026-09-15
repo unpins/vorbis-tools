@@ -14,33 +14,51 @@ Part of the [unpins](https://unpins.org) catalog; install it with [`unpin`](http
 Run a program with [unpin](https://github.com/unpins/unpin):
 
 ```bash
-unpin vorbis-tools ogg123 song.ogg
-unpin vorbis-tools oggenc song.wav
+unpin vorbis-tools --unpin-program=ogg123 song.ogg
+unpin vorbis-tools --unpin-program=oggenc -q 6 song.wav
 ```
 
-To install the programs onto your PATH:
+Or install them and call each by name, which is usually what you want:
 
 ```bash
 unpin install vorbis-tools
+ogg123 song.ogg
 ```
 
-`unpin install vorbis-tools` also creates the commands `ogg123` (play), `oggenc` (encode), `oggdec` (decode), `ogginfo` (inspect), `vorbiscomment` (edit tags) and `vcut` (split).
+`unpin install vorbis-tools` creates the `ogg123`, `oggenc`, `oggdec`, `ogginfo`, `vcut` and `vorbiscomment` commands.
 
-`ogg123` plays through the OS sound system out of the box — PulseAudio/PipeWire
-(falling back to ALSA, then OSS) on Linux, CoreAudio on macOS, WMM on Windows —
-with no shared libraries alongside the binary.
+## Programs
+
+| command         | what it does                                              |
+| --------------- | --------------------------------------------------------- |
+| `ogg123`        | play Ogg Vorbis, Opus, Speex, FLAC and Ogg FLAC files     |
+| `oggenc`        | encode WAV / AIFF / FLAC / Ogg FLAC / raw PCM to Vorbis   |
+| `oggdec`        | decode Vorbis back to WAV or raw PCM                      |
+| `ogginfo`       | show stream information for an Ogg file                   |
+| `vcut`          | split a Vorbis file in two at a sample or a time          |
+| `vorbiscomment` | list or edit the tags of a Vorbis file                    |
+
+`ogg123` plays through the system's sound output — PulseAudio or PipeWire
+(falling back to ALSA, then OSS) on Linux, CoreAudio on macOS, and the
+Windows audio system on Windows. It also writes to a file instead, as in
+`ogg123 -d wav -f out.wav song.ogg`.
+
+## Man pages
+
+The six man pages are embedded in the binary — read one with
+`unpin man vorbis-tools ogg123`.
 
 ## Build locally
 
 ```bash
 nix build github:unpins/vorbis-tools
-./result/bin/ogg123 --version
+./result/bin/vorbis-tools --unpin-program=ogg123 --version
 ```
 
 Or run directly:
 
 ```bash
-nix run github:unpins/vorbis-tools -- --version
+nix run github:unpins/vorbis-tools -- --unpin-program=ogg123 --version
 ```
 
 The first invocation will offer to add the [unpins.cachix.org](https://unpins.cachix.org) substituter so most pulls come pre-built.
@@ -51,19 +69,16 @@ The [Releases](https://github.com/unpins/vorbis-tools/releases) page has standal
 
 ## Build notes
 
-- One multicall binary holds all six tools. `vorbis-tools` is the canonical name
-  (a busybox-style dispatcher); the six tool names dispatch on `argv[0]`. They
-  share the heavy static archives — libvorbis / libogg / libFLAC / libspeex and,
-  for `ogg123`, libao — linked once.
-- Live audio is fully static: libao's backends, normally dlopen-loaded plugins,
-  are compiled directly into the binary as built-in drivers (pulse + alsa + oss
-  on Linux, CoreAudio on macOS, WMM on Windows). `ogg123` talks straight to the
-  PulseAudio/PipeWire socket — no daemon library on disk.
-- The tools are folded together post-link by renaming each tool's `main` (and
-  its other globals) with `objcopy`, then linking the renamed objects against the
-  shared archives read from each tool's real link command.
-- **Windows** is built with mingw and carries no companion DLLs. `ogg123` (which
-  upstream never ported to Windows) is ported here for WMM playback; its
-  HTTP-streaming transport is left out (local playback needs no network stack).
-- All six upstream man pages are embedded in the binary.
-```
+- **Sound output needs no libraries on the system.** The Linux binary talks to
+  PulseAudio or PipeWire directly and carries ALSA's configuration, so it also
+  plays on systems without ALSA's files; `/etc/asound.conf` and `~/.asoundrc`
+  still apply.
+- **Windows:** a single `.exe`, no companion DLLs. `ogg123` never supported
+  Windows upstream and is ported here; it plays local files and standard input
+  but not `http://` streams, which need a network library the Windows build
+  leaves out. Linux and macOS play `http://` and `https://` streams.
+- **Numbers in options always use a dot** (`oggenc -q 4.5`, `vcut in.ogg a.ogg b.ogg +2.5`),
+  whatever the system's locale. Upstream reads them with the locale's decimal
+  separator, so where that is a comma `-q 4.5` silently became quality 4.
+- `ogg123` reads its settings from `/etc/ogg123rc` and `~/.ogg123rc` on Linux
+  and macOS.

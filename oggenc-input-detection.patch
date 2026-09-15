@@ -1,0 +1,29 @@
+Two oggenc input bugs, in every build of 1.4.3:
+
+- An Ogg FLAC input was never recognized: its reader asks for 32 bytes of
+  the file, but the check needs 33, so it always said "not a supported
+  format".
+- Any unsupported input then crashed, calling the close function of a
+  format that was never found (upstream 0b3fbf42, after 1.4.3).
+
+--- a/oggenc/audio.c
++++ b/oggenc/audio.c
+@@ -48,7 +48,7 @@
+     {aiff_id, 12, aiff_open, wav_close, "aiff", N_("AIFF/AIFC file reader")},
+ #ifdef HAVE_LIBFLAC
+     {flac_id,     4, flac_open, flac_close, "flac", N_("FLAC file reader")},
+-    {oggflac_id, 32, flac_open, flac_close, "ogg", N_("Ogg FLAC file reader")},
++    {oggflac_id, 33, flac_open, flac_close, "ogg", N_("Ogg FLAC file reader")},
+ #endif
+     {NULL, 0, NULL, NULL, NULL, NULL}
+ };
+--- a/oggenc/oggenc.c
++++ b/oggenc/oggenc.c
+@@ -282,7 +282,6 @@
+             if(closein)
+                 fclose(in);
+             errors++;
+-            format->close_func(enc_opts.readdata);
+             continue;
+         }
+         

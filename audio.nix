@@ -100,11 +100,133 @@ let
     SND_PCM_PLUGIN_SYMBOL(pipewire);
   '';
 
+  # ---- ALSA configuration compiled into libasound (Linux) -------------------
+  # ALSA_CONFIG_DIR is set to this path, which exists on no disk. alsa-lib
+  # reaches its configuration files through three calls — fopen (input.c),
+  # stat64 and access (conf.c) — and those are redirected here: a path under
+  # the directory is answered from the arrays generated from src/conf; any
+  # other path (/etc/asound.conf, ~/.asoundrc, …) goes to the real call.
+  # ALSA_CONFIG_DIR / ALSA_CONFIG_PATH in the environment still override it.
+  alsaBuiltinDir = "/__unpins_alsa__";
+  alsaBuiltinC = ps.writeText "unpin_alsa_builtin.h" ''
+    /* unpins: ALSA's configuration tree, compiled in (see audio.nix). */
+    #include <errno.h>
+    #include <stdio.h>
+    #include <string.h>
+    #include <unistd.h>
+
+    struct unpin_alsa_conf {
+    	const char *name;
+    	const unsigned char *data;
+    	size_t len;
+    };
+
+    #include "unpin_alsa_conf.h"
+
+    static const struct unpin_alsa_conf *unpin_alsa_builtin(const char *path)
+    {
+    	const char *dir = ALSA_CONFIG_DIR;
+    	size_t i, n = strlen(dir);
+
+    	if (strncmp(path, dir, n) != 0 || path[n] != '/')
+    		return NULL;
+    	path += n;
+    	while (*path == '/')
+    		path++;
+    	for (i = 0; i < sizeof(unpin_alsa_confs) / sizeof(unpin_alsa_confs[0]); i++)
+    		if (strcmp(path, unpin_alsa_confs[i].name) == 0)
+    			return &unpin_alsa_confs[i];
+    	return NULL;
+    }
+
+    FILE *_snd_unpin_conf_fopen(const char *path, const char *mode)
+    {
+    	const struct unpin_alsa_conf *c = unpin_alsa_builtin(path);
+
+    	if (!c)
+    		return fopen(path, mode);
+    	if (mode[0] != 'r' || strchr(mode, '+')) {
+    		errno = EROFS;
+    		return NULL;
+    	}
+    	return fmemopen((void *)c->data, c->len, "r");
+    }
+
+    static int unpin_alsa_stat64(const char *path, struct stat64 *st)
+    {
+    	const struct unpin_alsa_conf *c = unpin_alsa_builtin(path);
+
+    	if (!c)
+    		return stat64(path, st);
+    	memset(st, 0, sizeof(*st));
+    	st->st_mode = S_IFREG | 0444;
+    	st->st_size = c->len;
+    	st->st_ino = (c - unpin_alsa_confs) + 1;
+    	return 0;
+    }
+
+    static int unpin_alsa_access(const char *path, int mode)
+    {
+    	if (!unpin_alsa_builtin(path))
+    		return access(path, mode);
+    	if (mode & (W_OK | X_OK)) {
+    		errno = EACCES;
+    		return -1;
+    	}
+    	return 0;
+    }
+  '';
+
   alsaStatic =
     if isDarwin then ps.alsa-lib
     else ps.alsa-lib.overrideAttrs (o: {
       buildInputs = (o.buildInputs or [ ]) ++ [ libpulse libpulse.dev ];
+      # Compile ALSA's configuration tree (alsa.conf, cards/, pcm/, ctl/) into
+      # libasound. The default config dir is this derivation's own share/alsa —
+      # a store path no user machine has — so every ALSA open (`rec`, and `play`
+      # whenever libao picks its alsa driver) failed with "Cannot access file
+      # …/alsa.conf" and "Unknown PCM default". Pointing it at the distro's
+      # /usr/share/alsa would only move the dependency (containers and minimal
+      # systems don't have it, and its version needn't match this alsa-lib). So
+      # the config dir is a directory no disk has, and every file under it is
+      # served from memory (unpin_alsa_builtin.h). The embedded alsa.conf still
+      # loads the machine's own settings — /etc/asound.conf, /etc/alsa/conf.d,
+      # ~/.asoundrc — from disk. The files still install into $out.
+      configureFlags = (o.configureFlags or [ ]) ++ [ "--with-configdir=${alsaBuiltinDir}" ];
+      installFlags = (o.installFlags or [ ]) ++ [ "alsaconfigdir=${builtins.placeholder "out"}/share/alsa" ];
       postPatch = (o.postPatch or "") + ''
+        echo "unpins: compiling the ALSA configuration into libasound"
+        files=$(cd src/conf && find . -name '*.conf' | sed 's|^\./||' | LC_ALL=C sort)
+        [ "$(printf '%s\n' "$files" | grep -c '^alsa.conf$')" = 1 ] || { echo "unpins: src/conf/alsa.conf not found"; exit 1; }
+        {
+          i=0
+          for f in $files; do
+            echo "static const unsigned char unpin_alsa_conf_$i[] = {"
+            od -An -v -tx1 "src/conf/$f" | sed 's/ *\([0-9a-f][0-9a-f]\)/0x\1,/g'
+            echo "};"
+            i=$((i + 1))
+          done
+          echo "static const struct unpin_alsa_conf unpin_alsa_confs[] = {"
+          i=0
+          for f in $files; do
+            echo "	{ \"$f\", unpin_alsa_conf_$i, sizeof(unpin_alsa_conf_$i) },"
+            i=$((i + 1))
+          done
+          echo "};"
+        } > src/unpin_alsa_conf.h
+        echo "unpins: $(printf '%s\n' "$files" | wc -l) configuration files embedded"
+        cp ${alsaBuiltinC} src/unpin_alsa_builtin.h
+        substituteInPlace src/conf.c \
+          --replace-fail '#include <locale.h>' '#include <locale.h>
+        #include "unpin_alsa_builtin.h"' \
+          --replace-fail 'if (!errors && access(fn, R_OK) < 0)' 'if (!errors && unpin_alsa_access(fn, R_OK) < 0)' \
+          --replace-fail 'if (stat64(fn, &st) < 0) {' 'if (unpin_alsa_stat64(fn, &st) < 0) {' \
+          --replace-fail 'if (stat64(lf->name, &st) >= 0) {' 'if (unpin_alsa_stat64(lf->name, &st) >= 0) {'
+        substituteInPlace src/input.c \
+          --replace-fail '#include <unistd.h>' '#include <unistd.h>
+        FILE *_snd_unpin_conf_fopen(const char *path, const char *mode);' \
+          --replace-fail 'FILE *fp = fopen(file, mode);' 'FILE *fp = _snd_unpin_conf_fopen(file, mode);'
+
         # Make pulse/pipewire build-in pcm types: snd_pcm_open_conf() then leaves
         # `lib` NULL (no synthesised module name) → snd_dlopen(NULL) → the static
         # symbol table is consulted, and snd_dlopen() of a `.so` never happens.
@@ -223,9 +345,10 @@ in
   # Expose the pipewire-static alsa-lib so the consumer (sox/vorbis-tools) can
   # point its OWN native alsa backend at the SAME libasound.a — otherwise the
   # app drags a second, vanilla alsa-lib whose `default` still dlopen-fails.
-  # Expose the static libpulse so a consumer (the engine self-fold) can name its
-  # nested `lib/pulseaudio/libpulsecommon-<ver>.a` — which the auto dep glob
-  # (lib/*.a) misses — as an explicit depArchive. null on Darwin (no pulse).
+  # The static libpulse is exposed too, so a consumer with its own pulse backend
+  # (sox) links the same client libao does, and the engine self-fold
+  # (vorbis-tools) can name its nested `lib/pulseaudio/libpulsecommon-<ver>.a`,
+  # which the auto dep glob (lib/*.a) misses. null on Darwin (no pulse).
   passthru = (o.passthru or { }) // { inherit alsaStatic; }
     // lib.optionalAttrs (!isDarwin) { inherit libpulse; };
   buildInputs = (o.buildInputs or [ ]) ++ extraBuildInputs;

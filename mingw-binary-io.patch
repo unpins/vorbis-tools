@@ -1,0 +1,128 @@
+--- a/ogg123/file_transport.c
++++ b/ogg123/file_transport.c
+@@ -24,6 +24,10 @@
+ #include <string.h>
+ 
+ #include "transport.h"
++#ifdef _WIN32
++#include <fcntl.h>
++#include <io.h>
++#endif
+ #include "i18n.h"
+ 
+ 
+@@ -67,10 +71,13 @@
+ 
+   /* Open file */
+   if (strcmp(source_string, "-") == 0) {
++#ifdef _WIN32
++    _setmode(_fileno(stdin), _O_BINARY);
++#endif
+     private->fp = stdin;
+     private->seekable = 0;
+   } else
+-    private->fp = fopen(source_string, "r");
++    private->fp = fopen(source_string, "rb");
+ 
+   if (private->fp == NULL) {
+     free(source->source_string);
+--- a/vorbiscomment/vcomment.c
++++ b/vorbiscomment/vcomment.c
+@@ -22,6 +22,10 @@
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
++#ifdef _WIN32
++#include <fcntl.h>
++#include <io.h>
++#endif
+ #endif
+ 
+ #include "getopt.h"
+@@ -855,6 +859,9 @@
+     /* for all modes, open the input file */
+ 
+     if (strncmp(p->infilename,"-",2) == 0) {
++#ifdef _WIN32
++        _setmode(_fileno(stdin), _O_BINARY);
++#endif
+         p->in = stdin;
+     } else {
+         p->in = fopen(p->infilename, "rb");
+@@ -875,6 +882,9 @@
+         }
+ 
+         if (strncmp(p->outfilename,"-",2) == 0) {
++#ifdef _WIN32
++            _setmode(_fileno(stdout), _O_BINARY);
++#endif
+             p->out = stdout;
+         } else {
+             p->out = fopen(p->outfilename, "wb");
+--- a/vcut/vcut.c
++++ b/vcut/vcut.c
+@@ -32,6 +32,10 @@
+ #include "vcut.h"
+ 
+ #include <locale.h>
++#ifdef _WIN32
++#include <fcntl.h>
++#include <io.h>
++#endif
+ #include "i18n.h"
+ 
+ #include <inttypes.h>
+@@ -202,7 +206,12 @@
+ 	else
+ 	{
+                 if(strcmp(filename, "-") == 0)
++                {
++#ifdef _WIN32
++                        _setmode(1, _O_BINARY);
++#endif
+                         s->out = fdopen(1, "wb");
++                }
+                 else
+                         s->out = fopen(filename, "wb");
+ 		s->drop_output = 0;
+@@ -256,7 +265,12 @@
+ 
+ 	state.in = fopen(argv[1], "rb");
+         if(strcmp(argv[1], "-") == 0)
++        {
++#ifdef _WIN32
++                _setmode(0, _O_BINARY);
++#endif
+                 state.in = fdopen(0, "rb");
++        }
+         else
+                 state.in = fopen(argv[1], "rb");
+ 	if(!state.in) {
+--- a/oggdec/oggdec.c
++++ b/oggdec/oggdec.c
+@@ -21,6 +21,7 @@
+ #if defined(_WIN32) || defined(__EMX__) || defined(__WATCOMC__)
+ #include <fcntl.h>
+ #include <io.h>
++#include <sys/stat.h>
+ #endif
+ 
+ #include <vorbis/vorbisfile.h>
+@@ -264,7 +265,17 @@
+     int channels;
+     int samplerate;
+ 
++#ifdef _WIN32
++    /* msvcrt's fseek succeeds on a pipe, so vorbisfile would take a piped
++       input for a seekable file and hang seeking it. */
++    struct _stat st;
++    ov_callbacks callbacks = OV_CALLBACKS_DEFAULT;
++    if (_fstat(_fileno(in), &st) == 0 && !(st.st_mode & _S_IFREG))
++        callbacks = OV_CALLBACKS_STREAMONLY;
++    if (ov_open_callbacks(in, &vf, NULL, 0, callbacks) < 0) {
++#else
+     if (ov_open_callbacks(in, &vf, NULL, 0, OV_CALLBACKS_DEFAULT) < 0) {
++#endif
+         fprintf(stderr, _("ERROR: Failed to open input as Vorbis\n"));
+         fclose(in);
+         return 1;

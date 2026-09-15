@@ -1,0 +1,10 @@
+--- a/ogg123/speex_format.c
++++ b/ogg123/speex_format.c
+@@ -138,6 +138,7 @@
+     private->eof = 0;
+     private->samples_decoded = private->samples_decoded_previous = 0;
+     private->bytes_read = private->bytes_read_previous = 0;
++    private->totalsamples = 0;
+     private->currentsample = 0;
+     private->comment_packet = NULL;
+     private->comment_packet_len = 0;
