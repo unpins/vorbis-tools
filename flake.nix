@@ -36,17 +36,6 @@
       # the same chain. Only the Linux playback path pulls libpulse, so off
       # Linux this is effectively identity.
       withCodecFixes = ps: ps.extend (final: prev: {
-        # libX11 (pulled on Linux via libao's playback chain, libpulseaudio →
-        # dbus → libX11) probes whether its cpp needs -undef to stop predefining
-        # `unix`. The engine's clang cpp keeps `unix` defined even under -undef,
-        # so the probe aborts ("defines unix with or without -undef. I don't know
-        # what to do."). RAWCPP only preprocesses X11's host-independent locale/
-        # compose text at build time, so hand it the build-host gcc cpp; libX11
-        # links in as a plain static .a regardless of which cpp cooked its data.
-        # Same fix sox/ddcutil use. Inert on darwin (no X11 in the CoreAudio path).
-        libx11 = prev.libx11.overrideAttrs (_: {
-          RAWCPP = "${final.buildPackages.stdenv.cc}/bin/cpp";
-        });
         # fftw (single, pulled via libpulseaudio's equalizer module) forces
         # --enable-openmp and links llvmPackages.openmp, but the engine's
         # self-contained clang has no OpenMP runtime → configure aborts ("don't
@@ -115,6 +104,14 @@
       # that nested archive explicitly as a depArchive, reusing the SAME static
       # libpulse audio.nix bakes into libao (exposed via passthru), so the bytes
       # match the build's input closure.
+      #
+      # That last sentence only became true with nix-lib's engineScopeFor fix: a
+      # `pkgs:` option used to be resolved against the BASE pkgs while `build`
+      # got the engine-swapped one, and the two sets differ in `pkgsStatic` —
+      # where the engine dep fixes live. The archive named here was then cut
+      # from a second, unfixed libpulse, and this closure carried two
+      # libpulseaudio, two dbus and two libx11 (one pair fixed, one not). Both
+      # arguments below are the engine scope now, so there is one of each.
       pulseCommonArchive = ps:
         let lp = (import ./audio.nix { lib = ps.lib // ulib; } ps).libpulse;
         in "${lp}/lib/pulseaudio/libpulsecommon-${lp.version}.a";
