@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.4.3-2] - 2026-09-26
+
 ### Fixed
 
 - On Windows, `ogg123` could not play any Ogg Vorbis or FLAC file, from disk
